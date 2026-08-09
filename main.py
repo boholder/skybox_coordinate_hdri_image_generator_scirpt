@@ -21,7 +21,7 @@ from typing import Final
 import Imath
 import OpenEXR
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageChops
 
 FACE_ORDER: Final = ("nx", "pz", "py", "ny", "px", "nz")
 
@@ -61,7 +61,9 @@ def load_font(size: int):
     return ImageFont.load_default()
 
 
-def grid_values(minimum: float, maximum: float, step: float, include_max: bool = True) -> list[float]:
+def grid_values(
+    minimum: float, maximum: float, step: float, include_max: bool = True
+) -> list[float]:
     first = math.ceil(minimum / step - 1e-7) * step
     limit = maximum + (1e-7 if include_max else -1e-7)
     count = max(0, int(math.floor((limit - first) / step)) + 1)
@@ -71,20 +73,23 @@ def grid_values(minimum: float, maximum: float, step: float, include_max: bool =
 def format_degrees(value: float) -> str:
     rounded = round(value)
     value_text = str(rounded) if abs(value - rounded) < 1e-6 else f"{value:g}"
-    return f"{value_text}\N{DEGREE SIGN}"
+    return f"{value_text}"
 
 
 def label_text(latitude: float, longitude: float) -> str:
     return f"{format_degrees(latitude)}, {format_degrees(longitude)}"
 
 
-def render_grid(latitude: np.ndarray, longitude: np.ndarray,
-                angular_pixel: float, settings: GridSettings) -> np.ndarray:
+def render_grid(
+    latitude: np.ndarray,
+    longitude: np.ndarray,
+    angular_pixel: float,
+    settings: GridSettings,
+) -> np.ndarray:
     latitude_distance = periodic_distance(latitude, settings.latitude_step)
-    longitude_distance = (
-        periodic_distance(longitude, settings.longitude_step)
-        * np.maximum(np.cos(latitude), 1e-5)
-    )
+    longitude_distance = periodic_distance(
+        longitude, settings.longitude_step
+    ) * np.maximum(np.cos(latitude), 1e-5)
     distance = np.minimum(latitude_distance, longitude_distance)
 
     half_width = settings.line_pixels * angular_pixel * 0.5
@@ -97,7 +102,9 @@ def render_grid(latitude: np.ndarray, longitude: np.ndarray,
     return rgba
 
 
-def composite_text(image: np.ndarray, mask: Image.Image, settings: GridSettings) -> np.ndarray:
+def composite_text(
+    image: np.ndarray, mask: Image.Image, settings: GridSettings
+) -> np.ndarray:
     """Composite opaque text over premultiplied RGBA image data."""
     alpha = np.asarray(mask, dtype=np.float32) / 255.0
     text_rgb = alpha[..., None] * settings.color * settings.intensity
@@ -119,7 +126,11 @@ def draw_panorama_labels(image: np.ndarray, settings: GridSettings) -> np.ndarra
 
     for latitude in grid_values(-90.0, 90.0, latitude_step):
         # The poles are single points, not one independent vertex per longitude.
-        longitudes = [0.0] if abs(abs(latitude) - 90.0) < 1e-6 else grid_values(-180.0, 180.0, longitude_step, include_max=False)
+        longitudes = (
+            [0.0]
+            if abs(abs(latitude) - 90.0) < 1e-6
+            else grid_values(-180.0, 180.0, longitude_step, include_max=False)
+        )
         for longitude in longitudes:
             x = int((longitude + 180.0) / 360.0 * width) % width
             y = int((90.0 - latitude) / 180.0 * height)
@@ -177,39 +188,196 @@ def cube_face_and_uv(direction: np.ndarray) -> tuple[str, float, float]:
     return "nz", -x / -z, y / -z
 
 
-def draw_cube_face_labels(image: np.ndarray, face: str,
-                          settings: GridSettings) -> np.ndarray:
+def spherical_direction(latitude: float, longitude: float) -> np.ndarray:
+    lat = math.radians(latitude)
+    lon = math.radians(longitude)
+
+    return np.array(
+        (
+            math.cos(lat) * math.cos(lon),
+            math.sin(lat),
+            math.cos(lat) * math.sin(lon),
+        ),
+        dtype=np.float32,
+    )
+
+
+def cube_face_pixel(
+    latitude: float,
+    longitude: float,
+    face_size: int,
+) -> tuple[str, float, float]:
+    face, u, v = cube_face_and_uv(spherical_direction(latitude, longitude))
+
+    x = (u + 1.0) * face_size * 0.5
+    y = (1.0 - v) * face_size * 0.5
+
+    return face, x, y
+
+
+def latitude_tangent_angle(
+    face: str,
+    latitude: float,
+    longitude: float,
+    face_size: int,
+) -> float:
+    """Return the label rotation for the current cubemap face."""
+
+    sample_offset = 0.05
+
+    face_a, x_a, y_a = cube_face_pixel(
+        latitude,
+        longitude - sample_offset,
+        face_size,
+    )
+
+    face_b, x_b, y_b = cube_face_pixel(
+        latitude,
+        longitude + sample_offset,
+        face_size,
+    )
+
+    # Avoid unstable rotations when the tangent crosses a cube-face boundary.
+    if face_a != face or face_b != face:
+        return 0.0
+
+    angle = math.degrees(math.atan2(y_b - y_a, x_b - x_a))
+
+    # On the +Y/-Y cap faces, preserve the continuous latitude-circle tangent.
+    if face in ("py", "ny"):
+        return angle - 180.0
+
+    # On the four side faces (+X, -X, +Z, -Z), keep text upright.
+    if angle > 90.0:
+        return angle - 180.0
+    elif angle <= -90.0:
+        return angle + 180.0
+    else:
+        return angle
+
+
+def draw_rotated_text(
+    target: Image.Image,
+    x: int,
+    y: int,
+    text: str,
+    font_size: int,
+    angle: float,
+    supersample: int = 4,
+) -> Image.Image:
+    """Draw a sharp, rotated label centered at x/y."""
+
+    font = load_font(font_size * supersample)
+    left, top, right, bottom = font.getbbox(text)
+
+    text_width = right - left
+    text_height = bottom - top
+    padding = 6 * supersample
+
+    high_res = Image.new(
+        "L",
+        (
+            text_width + padding * 2,
+            text_height + padding * 2,
+        ),
+        0,
+    )
+
+    high_res_draw = ImageDraw.Draw(high_res)
+    high_res_draw.text(
+        (padding - left, padding - top),
+        text,
+        fill=255,
+        font=font,
+    )
+
+    # Rotate at high resolution, then downsample once.
+    rotated_high_res = high_res.rotate(
+        -angle,
+        resample=Image.Resampling.BICUBIC,
+        expand=True,
+    )
+
+    output_size = (
+        max(1, round(rotated_high_res.width / supersample)),
+        max(1, round(rotated_high_res.height / supersample)),
+    )
+
+    rotated = rotated_high_res.resize(
+        output_size,
+        resample=Image.Resampling.LANCZOS,
+    )
+
+    paste_x = int(x - rotated.width * 0.5)
+    paste_y = int(y - rotated.height * 0.5)
+
+    layer = Image.new("L", target.size, 0)
+    layer.paste(rotated, (paste_x, paste_y))
+
+    return ImageChops.lighter(target, layer)
+
+
+def draw_cube_face_labels(
+    image: np.ndarray,
+    face: str,
+    settings: GridSettings,
+) -> np.ndarray:
     if not settings.labels_enabled:
         return image
 
-    size = image.shape[0]
+    face_size = image.shape[0]
     font = load_font(settings.label_font_size)
-    mask = Image.new("L", (size, size), 0)
-    draw = ImageDraw.Draw(mask)
+    mask = Image.new("L", (face_size, face_size), 0)
+
     latitude_step = math.degrees(settings.latitude_step)
     longitude_step = math.degrees(settings.longitude_step)
 
     for latitude in grid_values(-90.0, 90.0, latitude_step):
-        longitudes = [0.0] if abs(abs(latitude) - 90.0) < 1e-6 else grid_values(-180.0, 180.0, longitude_step, include_max=False)
-        lat = math.radians(latitude)
+        is_pole = abs(abs(latitude) - 90.0) < 1e-6
+
+        longitudes = (
+            [0.0]
+            if is_pole
+            else grid_values(
+                -180.0,
+                180.0,
+                longitude_step,
+                include_max=False,
+            )
+        )
+
         for longitude in longitudes:
-            lon = math.radians(longitude)
-            direction = np.array((
-                math.cos(lat) * math.cos(lon),
-                math.sin(lat),
-                math.cos(lat) * math.sin(lon),
-            ))
-            target_face, u, v = cube_face_and_uv(direction)
+            target_face, x, y = cube_face_pixel(
+                latitude,
+                longitude,
+                face_size,
+            )
+
             if target_face != face:
                 continue
 
-            x = int((u + 1.0) * size * 0.5)
-            y = int((1.0 - v) * size * 0.5)
             text = label_text(latitude, longitude)
-            left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
-            x = min(max(0, x + settings.label_offset), size - (right - left) - 1)
-            y = min(max(0, y + settings.label_offset), size - (bottom - top) - 1)
-            draw.text((x, y), text, fill=255, font=font)
+
+            # Text baseline follows the local latitude-circle tangent.
+            angle = (
+                0.0
+                if is_pole
+                else latitude_tangent_angle(
+                    face,
+                    latitude,
+                    longitude,
+                    face_size,
+                )
+            )
+
+            mask = draw_rotated_text(
+                mask,
+                int(x + settings.label_offset),
+                int(y + settings.label_offset),
+                text,
+                settings.label_font_size,
+                angle,
+            )
 
     return composite_text(image, mask, settings)
 
@@ -240,30 +408,53 @@ def write_rgba_exr(path: Path, image: np.ndarray) -> None:
 
     output = OpenEXR.OutputFile(str(path), header)
     try:
-        output.writePixels({
-            name: image[..., index].tobytes()
-            for index, name in enumerate("RGBA")
-        })
+        output.writePixels(
+            {name: image[..., index].tobytes() for index, name in enumerate("RGBA")}
+        )
     finally:
         output.close()
 
 
 def parse_rgb_255(value: str) -> np.ndarray:
-    srgb = np.asarray([float(part.strip()) for part in value.split(",")], dtype=np.float32)
+    srgb = np.asarray(
+        [float(part.strip()) for part in value.split(",")], dtype=np.float32
+    )
     srgb /= 255.0
-    return np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4).astype(np.float32)
+    return np.where(
+        srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4
+    ).astype(np.float32)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--style", choices=("panorama", "cubemap"), default="cubemap")
-    parser.add_argument("--output", type=Path, default=Path("angle_coordinate_grid.exr"))
-    parser.add_argument("--width", type=int, default=4096, help="Panorama width; height is width / 2")
-    parser.add_argument("--face-size", type=int, default=2048, help="Width/height of every cubemap face")
-    parser.add_argument("--longitude-step", type=float, default=15.0, help="Grid longitude spacing, degrees")
-    parser.add_argument("--latitude-step", type=float, default=15.0, help="Grid latitude spacing, degrees")
-    parser.add_argument("--line-pixels", type=float, default=1.0, help="Grid line width, pixels")
-    parser.add_argument("--intensity", type=float, default=8.0, help="HDR grid brightness multiplier")
+    parser.add_argument(
+        "--output", type=Path, default=Path("grid.exr")
+    )
+    parser.add_argument(
+        "--width", type=int, default=4096, help="Panorama width; height is width / 2"
+    )
+    parser.add_argument(
+        "--face-size", type=int, default=2048, help="Width/height of every cubemap face"
+    )
+    parser.add_argument(
+        "--longitude-step",
+        type=float,
+        default=15.0,
+        help="Grid longitude spacing, degrees",
+    )
+    parser.add_argument(
+        "--latitude-step",
+        type=float,
+        default=15.0,
+        help="Grid latitude spacing, degrees",
+    )
+    parser.add_argument(
+        "--line-pixels", type=float, default=1.0, help="Grid line width, pixels"
+    )
+    parser.add_argument(
+        "--intensity", type=float, default=8.0, help="HDR grid brightness multiplier"
+    )
     parser.add_argument(
         "--color",
         type=parse_rgb_255,
@@ -271,8 +462,8 @@ def parse_args() -> argparse.Namespace:
         metavar="R,G,B",
         help="Grid colour in 0..255 RGB notation",
     )
-    parser.add_argument("--font-size", type=int, default=26)
-    parser.add_argument("--label-offset", type=int, default=5)
+    parser.add_argument("--font-size", type=int, default=30)
+    parser.add_argument("--label-offset", type=int, default=25)
     parser.add_argument("--no-labels", action="store_true")
     return parser.parse_args()
 
@@ -299,7 +490,9 @@ def main() -> None:
         image = render_cubemap_strip(args.face_size, settings)
 
     write_rgba_exr(args.output, image)
-    print(f"Wrote {args.output}: {image.shape[1]}x{image.shape[0]} float32 RGBA ({args.style})")
+    print(
+        f"Wrote {args.output}: {image.shape[1]}x{image.shape[0]} float32 RGBA ({args.style})"
+    )
 
 
 if __name__ == "__main__":

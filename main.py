@@ -263,7 +263,7 @@ def latitude_tangent_angle(
 
     # On the +Y/-Y cap faces, preserve the continuous latitude-circle tangent.
     if face in ("py", "ny"):
-        return angle - 180.0
+        return angle
 
     # On the four side faces (+X, -X, +Z, -Z), keep text upright.
     if angle > 90.0:

@@ -3,7 +3,7 @@
 
 Styles:
   panorama  Seamless 2:1 equirectangular panorama.
-  cubemap   One-row cubemap strip: +X, -X, +Y, -Y, +Z, -Z.
+  cubemap   "6 Frames Layout (Cubic Environment)" Mapping in Unity): +X, -X, +Y, -Y, +Z, -Z.
 
 Examples:
   python main.py --style panorama --output grid_360.exr --width 4096
@@ -326,8 +326,17 @@ def draw_rotated_text(
         resample=Image.Resampling.LANCZOS,
     )
 
-    paste_x = int(x - rotated.width * 0.5)
-    paste_y = int(y - rotated.height * 0.5)
+    # Keep labels at cubemap edges fully inside their assigned face. This is
+    # especially important at the 45-degree longitude boundaries, where the
+    # label anchor lies exactly on a shared face edge.
+    paste_x = max(
+        0,
+        min(int(x - rotated.width * 0.5), target.width - rotated.width),
+    )
+    paste_y = max(
+        0,
+        min(int(y - rotated.height * 0.5), target.height - rotated.height),
+    )
 
     layer = Image.new("L", target.size, 0)
     layer.paste(rotated, (paste_x, paste_y))

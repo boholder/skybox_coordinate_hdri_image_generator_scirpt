@@ -146,10 +146,10 @@ def draw_panorama_labels(image: np.ndarray, settings: GridSettings) -> np.ndarra
         longitudes = (
             [0.0]
             if abs(abs(latitude) - 90.0) < 1e-6
-            else grid_values(-180.0, 180.0, longitude_step, include_max=False)
+            else grid_values(0.0, 360.0, longitude_step, include_max=False)
         )
         for longitude in longitudes:
-            x = int((longitude + 180.0) / 360.0 * width) % width
+            x = int(longitude / 360.0 * width) % width
             y = int((90.0 - latitude) / 180.0 * height)
             text = label_text(latitude, longitude)
             font = load_font(label_font_size(latitude, settings.label_font_size))
@@ -168,7 +168,7 @@ def render_panorama(width: int, settings: GridSettings) -> np.ndarray:
     height = width // 2
     u = (np.arange(width, dtype=np.float32) + 0.5) / width
     v = (np.arange(height, dtype=np.float32) + 0.5) / height
-    longitude = 2.0 * math.pi * u[None, :] - math.pi
+    longitude = 2.0 * math.pi * u[None, :]
     latitude = math.pi * (0.5 - v[:, None])
     image = render_grid(latitude, longitude, 2.0 * math.pi / width, settings)
     return draw_panorama_labels(image, settings)
@@ -212,9 +212,9 @@ def spherical_direction(latitude: float, longitude: float) -> np.ndarray:
 
     return np.array(
         (
-            math.cos(lat) * math.cos(lon),
-            math.sin(lat),
             math.cos(lat) * math.sin(lon),
+            math.sin(lat),
+            math.cos(lat) * math.cos(lon),
         ),
         dtype=np.float32,
     )
@@ -356,8 +356,8 @@ def draw_cube_face_labels(
             [0.0]
             if is_pole
             else grid_values(
-                -180.0,
-                180.0,
+                0.0,
+                360.0,
                 longitude_step,
                 include_max=False,
             )
@@ -407,7 +407,10 @@ def render_cubemap_strip(face_size: int, settings: GridSettings) -> np.ndarray:
     for face in FACE_ORDER:
         directions = cubemap_directions(face, face_size)
         latitude = np.arcsin(np.clip(directions[..., 1], -1.0, 1.0))
-        longitude = np.arctan2(directions[..., 2], directions[..., 0])
+        longitude = np.mod(
+            np.arctan2(directions[..., 0], directions[..., 2]),
+            2.0 * math.pi,
+        )
         image = render_grid(latitude, longitude, (math.pi * 0.5) / face_size, settings)
         faces.append(draw_cube_face_labels(image, face, settings))
     return np.concatenate(faces, axis=1)

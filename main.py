@@ -24,6 +24,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageChops
 
 FACE_ORDER: Final = ("nx", "pz", "py", "ny", "px", "nz")
+MIN_LABEL_FONT_SIZE: Final = 10
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,12 @@ def label_text(latitude: float, longitude: float) -> str:
     return f"{format_degrees(latitude)}, {format_degrees(longitude)}"
 
 
+def label_font_size(latitude: float, base_size: int) -> int:
+    """Scale labels with longitude-circle spacing while keeping them readable."""
+    scale = math.cos(math.radians(abs(latitude)))
+    return max(MIN_LABEL_FONT_SIZE, round(base_size * scale))
+
+
 def render_grid(
     latitude: np.ndarray,
     longitude: np.ndarray,
@@ -118,7 +125,6 @@ def draw_panorama_labels(image: np.ndarray, settings: GridSettings) -> np.ndarra
         return image
 
     height, width, _ = image.shape
-    font = load_font(settings.label_font_size)
     mask = Image.new("L", (width, height), 0)
     draw = ImageDraw.Draw(mask)
     latitude_step = math.degrees(settings.latitude_step)
@@ -135,6 +141,7 @@ def draw_panorama_labels(image: np.ndarray, settings: GridSettings) -> np.ndarra
             x = int((longitude + 180.0) / 360.0 * width) % width
             y = int((90.0 - latitude) / 180.0 * height)
             text = label_text(latitude, longitude)
+            font = load_font(label_font_size(latitude, settings.label_font_size))
             left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
             x = min(x + settings.label_offset, width - (right - left) - 1)
             y = min(y + settings.label_offset, height - (bottom - top) - 1)
@@ -326,7 +333,6 @@ def draw_cube_face_labels(
         return image
 
     face_size = image.shape[0]
-    font = load_font(settings.label_font_size)
     mask = Image.new("L", (face_size, face_size), 0)
 
     latitude_step = math.degrees(settings.latitude_step)
@@ -375,7 +381,7 @@ def draw_cube_face_labels(
                 int(x + settings.label_offset),
                 int(y + settings.label_offset),
                 text,
-                settings.label_font_size,
+                label_font_size(latitude, settings.label_font_size),
                 angle,
             )
 

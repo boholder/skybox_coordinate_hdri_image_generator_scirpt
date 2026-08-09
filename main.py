@@ -45,6 +45,7 @@ def render_face(
     latitude_step: float,
     line_pixels: float,
     intensity: float,
+    color: list[float]
 ) -> np.ndarray:
     direction = directions_for_face(face, size)
     x = direction[..., 0]
@@ -79,8 +80,8 @@ def render_face(
     alpha = alpha * alpha * (3.0 - 2.0 * alpha)
 
     # Premultiplied-alpha RGBA:
-    # RGB is exactly 0 where alpha is 0, so the background is fully transparent.
-    green = np.array([0.015, 1.0, 0.080], dtype=np.float32) * intensity
+    # RGB is exactly 0 where alpha is 0, so the background is fully transparent.]
+    green = np.array(color, dtype=np.float32) * intensity
 
     rgba = np.zeros((size, size, 4), dtype=np.float32)
     rgba[..., 0:3] = alpha[..., None] * green
@@ -123,12 +124,13 @@ def write_exr(path: Path, image: np.ndarray) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default="green_grid.exr")
-    parser.add_argument("--face-size", type=int, default=1024)
+    parser.add_argument("--output", default="angle_coordinate_grid.exr")
+    parser.add_argument("--face-size", type=int, default=2048)
     parser.add_argument("--longitude-step", type=float, default=15.0)
     parser.add_argument("--latitude-step", type=float, default=15.0)
     parser.add_argument("--line-pixels", type=float, default=1.25)
     parser.add_argument("--intensity", type=float, default=8.0)
+    parser.add_argument("--color", type=str, default="4,255,20")
     args = parser.parse_args()
     if args.face_size < 4:
         parser.error("--face-size must be at least 4")
@@ -138,8 +140,9 @@ def main() -> None:
     longitude_step = math.radians(args.longitude_step)
     latitude_step = math.radians(args.latitude_step)
     order = ("nx", "pz", "py", "ny", "px", "nz")
+    grid_color = [float(x)/255 for x in args.color.split(",")]
     faces = [render_face(face, args.face_size, longitude_step, latitude_step,
-                         args.line_pixels, args.intensity) for face in order]
+                         args.line_pixels, args.intensity, grid_color) for face in order]
     strip = np.concatenate(faces, axis=1)
     write_exr(Path(args.output), strip)
     print(f"Wrote {args.output}: {strip.shape[1]}x{strip.shape[0]} float32 RGB cubemap strip (-X +Z +Y -Y +X -Z)")

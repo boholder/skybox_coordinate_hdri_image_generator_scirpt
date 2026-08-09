@@ -255,11 +255,28 @@ def latitude_tangent_angle(
         face_size,
     )
 
-    # Avoid unstable rotations when the tangent crosses a cube-face boundary.
-    if face_a != face or face_b != face:
+    x_center, y_center = cube_face_pixel(latitude, longitude, face_size)[1:]
+
+    if face_a == face and face_b == face:
+        tangent_start = (x_a, y_a)
+        tangent_end = (x_b, y_b)
+    elif face_a == face:
+        # The higher-longitude sample crossed the face boundary.
+        tangent_start = (x_a, y_a)
+        tangent_end = (x_center, y_center)
+    elif face_b == face:
+        # The lower-longitude sample crossed the face boundary.
+        tangent_start = (x_center, y_center)
+        tangent_end = (x_b, y_b)
+    else:
         return 0.0
 
-    angle = math.degrees(math.atan2(y_b - y_a, x_b - x_a))
+    angle = math.degrees(
+        math.atan2(
+            tangent_end[1] - tangent_start[1],
+            tangent_end[0] - tangent_start[0],
+        )
+    )
 
     # On the +Y/-Y cap faces, preserve the continuous latitude-circle tangent.
     if face in ("py", "ny"):
@@ -333,9 +350,18 @@ def draw_rotated_text(
         0,
         min(int(x - rotated.width * 0.5), target.width - rotated.width),
     )
+
+    # If the label was shifted horizontally away from a face edge, follow the
+    # projected latitude tangent so the label remains centered on that line.
+    clamped_center_x = paste_x + rotated.width * 0.5
+    tangent_cos = math.cos(math.radians(angle))
+    adjusted_y = y
+    if abs(tangent_cos) > 1e-6:
+        adjusted_y += (clamped_center_x - x) * math.tan(math.radians(angle))
+
     paste_y = max(
         0,
-        min(int(y - rotated.height * 0.5), target.height - rotated.height),
+        min(int(adjusted_y - rotated.height * 0.5), target.height - rotated.height),
     )
 
     layer = Image.new("L", target.size, 0)

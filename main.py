@@ -3,7 +3,7 @@
 
 Styles:
   panorama  Seamless 2:1 equirectangular panorama.
-  cubemap   One-row cubemap strip: -X, +Z, +Y, -Y, +X, -Z.
+  cubemap   One-row cubemap strip: +X, -X, +Y, -Y, +Z, -Z.
 
 Examples:
   python main.py --style panorama --output grid_360.exr --width 4096
@@ -23,7 +23,7 @@ import OpenEXR
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageFilter
 
-FACE_ORDER: Final = ("nx", "pz", "py", "ny", "px", "nz")
+FACE_ORDER: Final = ("px", "nx", "py", "ny", "pz", "nz")
 MIN_LABEL_FONT_SIZE: Final = 15
 
 
@@ -501,10 +501,8 @@ def main() -> None:
     )
 
     if args.style == "panorama":
-        # 2:1 equirectangular panorama; premultiplied alpha is the angular-grid mask
         image = render_panorama(args.width, settings)
     else:
-        # Cubemap strip order: -X +Z +Y -Y +X -Z; premultiplied alpha is the angular-grid mask
         image = render_cubemap_strip(args.face_size, settings)
 
     write_rgba_exr(args.output, image)

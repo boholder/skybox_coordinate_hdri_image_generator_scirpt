@@ -21,10 +21,10 @@ from typing import Final
 import Imath
 import OpenEXR
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageChops
+from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageFilter
 
 FACE_ORDER: Final = ("nx", "pz", "py", "ny", "px", "nz")
-MIN_LABEL_FONT_SIZE: Final = 10
+MIN_LABEL_FONT_SIZE: Final = 15
 
 
 @dataclass(frozen=True)
@@ -50,10 +50,10 @@ def smoothstep01(value: np.ndarray) -> np.ndarray:
 
 def load_font(size: int):
     for path in (
-            "DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "C:/Windows/Fonts/arial.ttf",
-            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     ):
         try:
             return ImageFont.truetype(path, size)
@@ -109,14 +109,25 @@ def render_grid(
     return rgba
 
 
-def composite_text(
-    image: np.ndarray, mask: Image.Image, settings: GridSettings
+def composite_labels(
+    image: np.ndarray,
+    text_mask: Image.Image,
+    settings: GridSettings,
 ) -> np.ndarray:
-    """Composite opaque text over premultiplied RGBA image data."""
-    alpha = np.asarray(mask, dtype=np.float32) / 255.0
-    text_rgb = alpha[..., None] * settings.color * settings.intensity
-    image[..., :3] = text_rgb + image[..., :3] * (1.0 - alpha[..., None])
-    image[..., 3] = alpha + image[..., 3] * (1.0 - alpha)
+    """Composite a glyph-following inverse-color border and label text."""
+    dilated_text = text_mask.filter(ImageFilter.MaxFilter(5))
+    background_mask = ImageChops.subtract(dilated_text, text_mask)
+    background_alpha = np.asarray(background_mask, dtype=np.float32) / 255.0
+    background_color = np.clip(1.0 - settings.color, 0.0, 1.0)
+    image[..., :3] = background_alpha[..., None] * background_color + image[..., :3] * (
+        1.0 - background_alpha[..., None]
+    )
+    image[..., 3] = background_alpha + image[..., 3] * (1.0 - background_alpha)
+
+    text_alpha = np.asarray(text_mask, dtype=np.float32) / 255.0
+    text_rgb = text_alpha[..., None] * settings.color * settings.intensity
+    image[..., :3] = text_rgb + image[..., :3] * (1.0 - text_alpha[..., None])
+    image[..., 3] = text_alpha + image[..., 3] * (1.0 - text_alpha)
     return image
 
 
@@ -125,8 +136,8 @@ def draw_panorama_labels(image: np.ndarray, settings: GridSettings) -> np.ndarra
         return image
 
     height, width, _ = image.shape
-    mask = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(mask)
+    text_mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(text_mask)
     latitude_step = math.degrees(settings.latitude_step)
     longitude_step = math.degrees(settings.longitude_step)
 
@@ -147,7 +158,7 @@ def draw_panorama_labels(image: np.ndarray, settings: GridSettings) -> np.ndarra
             y = min(y + settings.label_offset, height - (bottom - top) - 1)
             draw.text((max(0, x), max(0, y)), text, fill=255, font=font)
 
-    return composite_text(image, mask, settings)
+    return composite_labels(image, text_mask, settings)
 
 
 def render_panorama(width: int, settings: GridSettings) -> np.ndarray:
@@ -333,7 +344,7 @@ def draw_cube_face_labels(
         return image
 
     face_size = image.shape[0]
-    mask = Image.new("L", (face_size, face_size), 0)
+    text_mask = Image.new("L", (face_size, face_size), 0)
 
     latitude_step = math.degrees(settings.latitude_step)
     longitude_step = math.degrees(settings.longitude_step)
@@ -376,8 +387,8 @@ def draw_cube_face_labels(
                 )
             )
 
-            mask = draw_rotated_text(
-                mask,
+            text_mask = draw_rotated_text(
+                text_mask,
                 int(x + settings.label_offset),
                 int(y + settings.label_offset),
                 text,
@@ -385,7 +396,7 @@ def draw_cube_face_labels(
                 angle,
             )
 
-    return composite_text(image, mask, settings)
+    return composite_labels(image, text_mask, settings)
 
 
 def render_cubemap_strip(face_size: int, settings: GridSettings) -> np.ndarray:
@@ -434,9 +445,7 @@ def parse_rgb_255(value: str) -> np.ndarray:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--style", choices=("panorama", "cubemap"), default="cubemap")
-    parser.add_argument(
-        "--output", type=Path, default=Path("grid.exr")
-    )
+    parser.add_argument("--output", type=Path, default=Path("grid.exr"))
     parser.add_argument(
         "--width", type=int, default=4096, help="Panorama width; height is width / 2"
     )
@@ -469,7 +478,7 @@ def parse_args() -> argparse.Namespace:
         help="Grid colour in 0..255 RGB notation",
     )
     parser.add_argument("--font-size", type=int, default=30)
-    parser.add_argument("--label-offset", type=int, default=25)
+    parser.add_argument("--label-offset", type=int, default=0)
     parser.add_argument("--no-labels", action="store_true")
     return parser.parse_args()
 
